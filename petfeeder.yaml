@@ -1,0 +1,165 @@
+esphome:
+  name: petfeeder
+  
+esp32:
+  board: esp32cam
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+
+ota:
+  password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: Petfeeder Fallback Hotspot
+    password: !secret ap_password
+    
+captive_portal: 
+
+# Pins may vary depending on board but if a generic board is used these are probably correct
+#esp32_camera:
+#  external_clock:
+#    pin: GPIO0
+#    frequency: 20MHz
+#  i2c_pins:
+#    sda: GPIO26
+#    scl: GPIO27
+#  data_pins:
+#    - GPIO5
+#    - GPIO18
+#    - GPIO19
+#    - GPIO21
+#    - GPIO36
+#    - GPIO39
+#    - GPIO34
+#    - GPIO35
+#  vsync_pin: GPIO25
+#  href_pin: GPIO23
+#  pixel_clock_pin: GPIO22
+#  power_down_pin: GPIO32
+#  resolution: 640x480
+#  name: petfeeder_camera
+#  idle_framerate: 0.1fps
+#  jpeg_quality: 10
+#  aec2: true
+#  ae_level: 2
+
+# Press feed button
+switch:
+  - platform: gpio
+    pin:
+      number: GPIO12
+      inverted: true
+    id: petfeeder_feed_button
+    
+    # When pressed we wait for 5 seconds and if the error light is turned off after this we set the status to success
+    on_turn_on:
+      then:
+        - delay: 5s
+        - if:
+            condition:
+              for:
+                time: 5s
+                condition:
+                  binary_sensor.is_off: petfeeder_error_light
+            then:
+              - text_sensor.template.publish:
+                  id: petfeeder_status
+                  state: Success
+                  
+        # We then wait 10 seconds more and if the status is LowFoodLevel we set it to Success
+        - delay: 10s
+        - if:
+            condition:
+              - text_sensor.state:
+                  id: petfeeder_status
+                  state: LowFoodLevel
+            then:
+              - text_sensor.template.publish:
+                  id: petfeeder_status
+                  state: SuccessButLowFoodLevel
+                  
+  # Activate the feeding process by "clicking the button" for 150ms
+  - platform: template
+    name: petfeeder_feed
+    icon: 'mdi:cat'
+    turn_on_action:
+      - switch.turn_on: petfeeder_feed_button
+      - delay: 150ms
+      - switch.turn_off: petfeeder_feed_button
+      
+binary_sensor:
+
+  # Error message light
+  - platform: gpio
+    pin:
+      number: GPIO13
+      inverted: true
+    id: petfeeder_error_light
+    
+    # Set status
+    on_click:
+    
+      # If turned on in the interval of 990-1100ms the status should be "LowFoodLevel"
+      - min_length: 990ms
+        max_length: 1100ms
+        then:
+          - text_sensor.template.publish:
+              id: petfeeder_status
+              state: LowFoodLevel
+                  
+      # If turned on in the interval of 1400-3100ms the status should be "CouldNotFeed"
+      - min_length: 1400ms
+        max_length: 3100ms
+        then:
+          - text_sensor.template.publish:
+              id: petfeeder_status
+              state: CouldNotFeed
+    
+    # On the error light state change run the detection script to set the text for petfeeder_status
+    on_state:
+      then:
+        - delay: 5s
+        - script.execute: detection
+       
+# Status text       
+text_sensor:
+  - platform: template
+    name: petfeeder_status
+    icon: 'mdi:information-outline'
+    id: petfeeder_status
+    
+# Detect status from latest feed by parsing the error light
+script:
+  - id: detection
+    then:
+      - if:
+          condition:
+            for:
+              time: 5s
+              condition:
+                binary_sensor.is_off: petfeeder_error_light
+          then:
+            - text_sensor.template.publish:
+                id: petfeeder_status
+                state: OK
+      - if:
+          condition:
+            for:
+              time: 5s
+              condition:
+                binary_sensor.is_on: petfeeder_error_light
+          then:
+            - text_sensor.template.publish:
+                id: petfeeder_status
+                state: ErrorNoFood
